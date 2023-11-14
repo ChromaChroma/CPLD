@@ -1,4 +1,4 @@
-module Main where
+module Rpn where
 
 import Data.Char (isDigit, isSpace)
 
