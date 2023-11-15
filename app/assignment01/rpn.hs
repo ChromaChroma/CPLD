@@ -1,4 +1,4 @@
-module Rpn where
+module RPN where
 
 import Data.Char (isDigit, isSpace)
 
@@ -17,15 +17,13 @@ data Expr
 -- | Lexes RPN string into tokens
 lexer :: String -> [Token]
 lexer [] = []
+lexer (' ' : cs) = lexer cs
 lexer ('+' : cs) = TPlus : lexer cs
 lexer ('*' : cs) = TMult : lexer cs
 lexer cs
   | digits /= [] = TNum (read digits :: Int) : lexer digitsRest
-  | spaces /= [] = lexer spacesRest
   | otherwise = error "invalid input"
-  where
-    (digits, digitsRest) = span isDigit cs
-    (spaces, spacesRest) = span isSpace cs
+  where (digits, digitsRest) = span isDigit cs
 
 -- | Parses the tokens
 parser :: [Token] -> Expr
@@ -34,8 +32,8 @@ parser tokens = parser' [] tokens
     parser' :: [Expr] -> [Token] -> Expr
     parser' [e] [] = e
     parser' [] [] = error "No expression left on stack"
-    -- Numbers (Int)
     parser' (x : y : zs) [] = error "Multiple, non-combined expressions left on stack"
+    -- Numbers (Int)
     parser' es (TNum x : ts) = parser' (Num x : es) ts
     -- Addition (+)
     parser' (e1 : e2 : es) (TPlus : ts) = parser' (Plus e2 e1 : es) ts
