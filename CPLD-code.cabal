@@ -48,13 +48,14 @@ executable ass02
     default-language: Haskell2010
     
 executable ass03
-    main-is:          Main.hs
+    main-is:          Lambda.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    -- other-modules:    Lambda
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:    base ^>=4.14.3.0
+                    , containers >= 0.6.8
     hs-source-dirs:   app\assignment03
     default-language: Haskell2010
