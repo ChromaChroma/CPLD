@@ -79,7 +79,6 @@ parser tkns = let (e, ts) = parseExpr tkns in if null ts then e
 -- | Substitute: Base case String is empty (cannot match variables) 
 eval :: Expr -> Value
 eval = eval' Map.empty .substitute
-
   where
     eval' :: Map String Value -> Expr -> Value
     eval' _   (Num x)                           = VInt x
