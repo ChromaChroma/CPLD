@@ -121,6 +121,24 @@ substitute s e (Apply e1 e2)                     = Apply (substitute s e e1) (su
 substitute s e (Lambda (Var v) body)             = Lambda (Var v) (substitute s e body)
 substitute _ _ _                                 = error "Substitution: Error occured during substitution of lambda abstractions"
 
+-- TODO, perhaps the x's overlap eachother in "`#f `#x `f 2 10 `#x #y ``add x y 3"
+--  As in, right hand lambda is inlined, then \x -> \x->x \y ->, when the first x should be ignored but now maybe breaking
+
+
+-- Apply     (Lambda (Var "x")(Lambda (Var "y") (Apply (Apply  Add  (Var "x") ) (Var "y") )))      (Num 3)
+-- Apply 
+--   (Lambda (Var "x") 
+--     (Lambda (Var "y") 
+--       (Apply 
+--         (Apply 
+--           Add 
+--           (Num 3)
+--         ) 
+--         (Var "y")
+--       )
+--     )
+--   ) (Num 3)
+
 -- | Operators for runOp of addition and multiplication
 (|+|), (|*|) :: Value -> Value -> Value
 (|+|) = runOp (+)
@@ -154,7 +172,10 @@ interpret  = eval . parser . lexer
 
 -- Error raised: Map.!: given key is not an element in the map \n CallStack (from HasCallStack): 
 -- \n error, called at libraries/containers/containers/src/Data/Map/Internal.hs:617:17 in containers-0.6.7:Data.Map.Internal
+ll = (Lambda (Var "f")(Apply  (Lambda (Var "x")(Apply (Var "f") (Num 2)   ) )  (Num 10)) ) 
+rr = (Apply(Lambda (Var "x")  (Lambda (Var "y")(Apply (Apply   Add   (Var "x")) (Var "y")   ) ))(Num 3)  )
 
+bb = Apply ll rr
 -- (Apply   (Lambda (Var "f")(Apply  (Lambda (Var "x")(Apply (Var "f") (Num 2)   ) )  (Num 10))  )   (Apply(Lambda (Var "x")  (Lambda (Var "y")(Apply (Apply   Add   (Var "x")) (Var "y")   ) ))(Num 3)  ))
 --  ===
 -- Apply 
