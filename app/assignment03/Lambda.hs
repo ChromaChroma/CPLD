@@ -55,25 +55,12 @@ parser tkns = let (e, ts) = parseExpr tkns in if null ts then e
     parseValue :: [Token] -> (Expr, [Token])
     parseValue (TNum n : tokens) = (Num n, tokens) -- Num
     parseValue (TVar v : tokens) = (Var v, tokens) -- Var
-    parseValue ts                = error $"Invalid expression" ++ show ts
-
-    -- parseApply :: [Token] -> (Expr, [Token]) -- Apply
-    -- parseApply (TApply : tokens) = (Apply e1 e2, rest') where 
-    --   (e1, rest ) = parseExpr tokens
-    --   (e2, rest') = parseExpr rest
-    -- parseApply tokens = parseValue tokens
-
-    -- parseLambda :: [Token] -> (Expr, [Token])
-    -- parseLambda (TLambda : tokens) = case e1 of  -- Lambda
-    --   (Var v) -> first (Lambda $ Var v) (parseExpr rest)
-    --   _       -> error "LambdaParser: Var expected after lambda notion"
-    --   where (e1, rest) = parseExpr tokens
-    -- parseLambda tokens = parseApply tokens
+    parseValue ts                = error $ "Invalid expression" ++ show ts
 
     parseLambda :: [Token] -> (Expr, [Token])
     parseLambda (TLambda : tokens) = case e1 of  -- Lambda
       (Var v) -> first (Lambda $ Var v) (parseExpr rest)
-      _       -> error "LambdaParser: Var expected after lambda notion"
+      _       -> error "LambdaParser: Var expected after lambda notation"
       where (e1, rest) = parseExpr tokens
     parseLambda tokens = parseValue tokens
 
@@ -121,7 +108,7 @@ substitute = substitute' "" (Num $ -1)
     substitute' s e (Var var)                         = if var == s then e else Var var
     substitute' _ _ Add                               = Add
     substitute' _ _ Mult                              = Mult
-    substitute' s e (Apply (Lambda (Var v) body) e2) = substitute' v (substitute' s e e2) (substitute' s e body) -- substitute' the lambda body before total substitution to work away duplicate variables
+    substitute' s e (Apply (Lambda (Var v) body) e2)  = substitute' v (substitute' s e e2) (substitute' s e body) -- substitute' the lambda body before total substitution to work away duplicate variables
     substitute' s e (Apply e1 e2)                     = Apply (substitute' s e e1) (substitute' s e e2)
     substitute' s e (Lambda (Var v) body)             = Lambda (Var v) (substitute' s e body)
     substitute' _ _ _                                 = error "Substitution: Error occured during substitution of lambda abstractions"
@@ -146,8 +133,8 @@ pp (Apply e1 e2)        = '(' : pp e1 ++ ") (" ++ pp e2 ++ ")"
 pp (Lambda (Var v) e2)  = "_" ++ v ++ " -> {" ++ pp e2 ++ "}"
 pp (Num i)              = show i
 pp (Var v)              = v
-pp Add                = "add"
-pp Mult               = "mul"
+pp Add                  = "add"
+pp Mult                 = "mul"
 pp _                    = "<Some invalid>"
 
 -- | Combines evaluation, parsing and lexing
