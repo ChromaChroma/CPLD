@@ -2,7 +2,7 @@
 module Lambda where
 
 import Data.Char
-import Data.Map.Strict (Map, (!))
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Text.Show.Functions ()
 import Data.Bifunctor (first)
@@ -50,30 +50,30 @@ parser tkns = let (e, ts) = parseExpr tkns in if null ts then e
   else error "Parser: Parsing complete, but still tokens left"
   where
     parseExpr :: [Token] -> (Expr, [Token])
-    parseExpr tokens = parseOperators tokens
+    parseExpr tokens = parseLambda tokens
 
     parseValue :: [Token] -> (Expr, [Token])
     parseValue (TNum n : tokens) = (Num n, tokens) -- Num
     parseValue (TVar v : tokens) = (Var v, tokens) -- Var
     parseValue ts                = error $ "Invalid expression" ++ show ts
 
-    parseLambda :: [Token] -> (Expr, [Token])
-    parseLambda (TLambda : tokens) = case e1 of  -- Lambda
-      (Var v) -> first (Lambda $ Var v) (parseExpr rest)
-      _       -> error "LambdaParser: Var expected after lambda notation"
-      where (e1, rest) = parseExpr tokens
-    parseLambda tokens = parseValue tokens
+    parseOperators :: [Token] -> (Expr, [Token])
+    parseOperators (TMult : tokens) = (Mult, tokens) -- Mul
+    parseOperators (TAdd : tokens) = (Add, tokens) -- Add
+    parseOperators tokens = parseValue tokens
 
     parseApply :: [Token] -> (Expr, [Token]) -- Apply
     parseApply (TApply : tokens) = (Apply e1 e2, rest') where
       (e1, rest ) = parseExpr tokens
       (e2, rest') = parseExpr rest
-    parseApply tokens = parseLambda tokens
-
-    parseOperators :: [Token] -> (Expr, [Token])
-    parseOperators (TMult : tokens) = (Mult, tokens) -- Mul
-    parseOperators (TAdd : tokens)  = (Add, tokens)  -- Add
-    parseOperators tokens           = parseApply tokens
+    parseApply tokens = parseOperators tokens
+    
+    parseLambda :: [Token] -> (Expr, [Token])
+    parseLambda (TLambda : tokens) = case e1 of  -- Lambda
+      (Var v) -> first (Lambda $ Var v) (parseExpr rest)
+      _       -> error "LambdaParser: Var expected after lambda notation"
+      where (e1, rest) = parseExpr tokens
+    parseLambda tokens = parseApply tokens
 
 -- | Evaluates an expression into a Value
 -- | Substitute: Base case String is empty (cannot match variables) 
@@ -83,7 +83,7 @@ eval = eval' Map.empty .substitute
   where
     eval' :: Map String Value -> Expr -> Value
     eval' _   (Num x)                           = VInt x
-    eval' env (Var v)                           = env ! v
+    eval' env (Var v)                           = env Map.! v
     eval' _   Add                               = VFun $ VFun . (|+|)
     eval' _   Mult                              = VFun $ VFun . (|*|)
     eval' env (Apply Add e2)                    = VFun (eval' env e2 |+|)
@@ -113,10 +113,15 @@ substitute = substitute' "" (Num $ -1)
     substitute' s e (Lambda (Var v) body)             = Lambda (Var v) (substitute' s e body)
     substitute' _ _ _                                 = error "Substitution: Error occured during substitution of lambda abstractions"
 
+
 -- | Operators for runOp of addition and multiplication
 (|+|), (|*|) :: Value -> Value -> Value
 (|+|) = runOp (+)
 (|*|) = runOp (*)
+
+infixl 9 |+|
+
+infixl 9 |*|
 
 -- | Runs an binary integer operator on the Value wrapper
 runOp:: (Int -> Int -> Int) -> Value -> Value -> Value
