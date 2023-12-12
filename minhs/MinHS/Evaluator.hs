@@ -35,7 +35,7 @@ data Value
   | Nil
   | Cons Integer Value
   | Func (Value -> Value)
-  | PartialFunc Value Exp -- Expected Value to be Func with a Func inside (multiple arguments expected)
+  | PartialFunc Exp -- 
   | AddEnv Id 
   | Ite Exp Exp -- First is True expr. Second is False expr
   -- Add other variants as needed
@@ -65,7 +65,7 @@ msInitialState e = MS [] E.empty (Eval e)
 -- checks whether machine is in final state
 msInFinalState :: MachineState -> Bool
 msInFinalState (MS _ _   (Eval _))    = False
-msInFinalState (MS s env (Ret value)) = null s &&  isTerminatingValue value
+msInFinalState (MS s _ (Ret value)) = null s &&  isTerminatingValue value
   where
     isTerminatingValue :: Value -> Bool
     isTerminatingValue (I _)         = True
@@ -77,42 +77,43 @@ msInFinalState (MS s env (Ret value)) = null s &&  isTerminatingValue value
 -- returns the final value if machine is in final state. If the machine is not in final state, throw an error
 msGetValue :: MachineState -> Value
 msGetValue (MS _ _ (Eval _))   = error "Machine State is not in a final state: Machine is in Eval State"
-msGetValue ms@(MS _ _ (Ret e)) =
-  if msInFinalState ms
-    then e
-    else error "Machine State is not in a final state."
+msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms
+  then e
+  else error "Machine State is not in a final state."
 
 msStep :: MachineState -> MachineState
-msStep (MS s env (Ret val)) = case s of 
-  []                                  -> error "Cannot step when final value has been reached"
-  (Ite e1 e2 : s)                     -> case val of 
-    B True  -> MS s env (Eval e1)
-    B False -> MS s env (Eval e2)
-    _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
-  Func f           : s                -> MS s env (Ret $ f val)
-  PartialFunc f e2 : s                -> MS (Func (\v -> applyFunc (applyFunc f val) v) : s) env (Eval e2)
-  AddEnv ident : PartialFunc _ e2 : s -> MS s (E.add env (ident, val) ) (Eval e2)
-  s                                   -> error $ "Some other state when returning: " ++ show s ++ " :: " ++ show val
+msStep (MS stack env (Ret val)) = case stack of 
+  []                                -> error "Cannot step when final value has been reached"
+  (Ite e1 e2 : s)                   -> case val of 
+                                        B True  -> MS s env (Eval e1)
+                                        B False -> MS s env (Eval e2)
+                                        _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
+  Func f           : s              -> MS s env (Ret $ f val)
+  PartialFunc e2 : s                -> MS (Func (\v -> applyFunc val v) : s) env (Eval e2)
+  AddEnv ident : PartialFunc e2 : s -> MS s (E.add env (ident, val) ) (Eval e2)
+  s                                 -> error $ "Some other state when returning: " ++ show s ++ " :: " ++ show val
 msStep (MS s env (Eval e)) = case e of
-  Var ident -> case E.lookup env ident of 
-    Just val -> MS s env (Ret val)
-    Nothing  -> error "Invalid expression: free variable in expression"
-  Num i       -> MS s env (Ret $ I i) 
-  Con "True"  -> MS s env (Ret $ B True)
-  Con "False" -> MS s env (Ret $ B False)
-  Con "Nil"   -> MS s env (Ret Nil) 
-  Con "Cons"  -> MS s env (Ret (Func (\val -> Func (\next -> runCons val next))))
-  App e1 e2   -> MS (PartialFunc (Func id) e2:s) env (Eval e1)
-  Prim op     -> MS s env . Ret . Func $ if isUnaryOp op 
-    then applyUnaryOp op
-    else \x ->  Func (applyOp op x)
-  Let bindings e -> if null bindings 
-    then MS s env (Eval e)
-    else let  (Bind ident _ _ e' : bs) = bindings
-              smallerLet               = PartialFunc (Func id) (Let bs e)
-          in  MS (AddEnv ident : smallerLet : s) env (Eval e')
-  If g e1 e2 -> MS (Ite e1 e2 : s) env (Eval g)
-  other -> error $ "Not Implemented: " ++ show other
+  Var ident                  -> case E.lookup env ident of 
+                                  Just val -> MS s env (Ret val)
+                                  Nothing  -> error "Invalid expression: free variable in expression"
+  Num i                      -> MS s env (Ret $ I i) 
+  Con "True"                 -> MS s env (Ret $ B True)
+  Con "False"                -> MS s env (Ret $ B False)
+  Con "Nil"                  -> MS s env (Ret Nil) 
+  Con "Cons"                 -> MS s env (Ret (Func (\val -> Func (\next -> runCons val next))))
+  App e1 e2                  -> MS (PartialFunc e2 : s) env (Eval e1)
+  Prim op                    -> MS s env . Ret . Func $ if isUnaryOp op 
+                                  then applyUnaryOp op
+                                  else \x ->  Func (applyOp op x)
+  Let bindings ex            -> if null bindings 
+                                  then MS s env (Eval ex)
+                                  else let  (Bind ident _ _ e' : bs) = bindings                 --TODO: Add bind args  
+                                            smallerLet               = PartialFunc (Let bs ex)
+                                        in  MS (AddEnv ident : smallerLet : s) env (Eval e')
+  If g e1 e2                 -> MS (Ite e1 e2 : s) env (Eval g)
+  Recfun (Bind ident _ _ ex) -> let funcFrame = PartialFunc ex                                --TODO: Add bind args
+                                in MS (AddEnv ident : funcFrame : s) env (Eval ex) 
+  other                      -> error $ "Not Implemented: " ++ show other
 
 isUnaryOp :: Op -> Bool 
 isUnaryOp Neg  = True
@@ -134,20 +135,20 @@ runCons e1 e2 = case (e1, e2) of
 applyUnaryOp :: Op -> Value -> Value
 applyUnaryOp op v = case op of 
   Neg  -> case v of 
-    I i -> I (-1 * i)
-    _ -> error "Cannot invert non integer values" -- Maybe later this also for bools?
+            I i -> I (-1 * i)
+            _ -> error "Cannot invert non integer values" -- Maybe later this also for bools?
   Head -> case v of
-    Cons i _  -> I i
-    Nil       -> error "Cannot run Head on empty list"
-    _         -> error "Can only run Head on array values"
+            Cons i _  -> I i
+            Nil       -> error "Cannot run Head on empty list"
+            _         -> error "Can only run Head on array values"
   Tail -> case v of
-    Cons _ cs -> cs
-    Nil       -> error "Cannot run Tail on empty list"
-    _         -> error "Can only run Tail on array values"
+            Cons _ cs -> cs
+            Nil       -> error "Cannot run Tail on empty list"
+            _         -> error "Can only run Tail on array values"
   Null -> case v of 
-    Nil       -> B True
-    Cons _ _  -> B False
-    _         -> error "Can only run Null on array values"
+            Nil       -> B True
+            Cons _ _  -> B False
+            _         -> error "Can only run Null on array values"
   _ -> error "Cannot run binary operator as unary operator"
 
 applyOp :: Op -> Value -> Value -> Value
@@ -162,7 +163,7 @@ applyOp operator v v' = case operator of
   Lt    -> applyIntComp  (<)  v v'
   Le    -> applyIntComp  (<=) v v'
   Eq    -> applyEquality      v v'
-  Ne    -> applyInequality      v v'
+  Ne    -> applyInequality    v v'
   _     -> error "Cannot run unary operator as binary operator"
   where 
     applyDiv ::  Value -> Value -> Value
