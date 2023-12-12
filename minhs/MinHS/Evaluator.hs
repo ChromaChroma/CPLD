@@ -83,15 +83,17 @@ msGetValue ms@(MS _ _ (Ret e)) =
     else error "Machine State is not in a final state."
 
 msStep :: MachineState -> MachineState
-msStep (MS []                                    _   (Ret  _        )) = error "Cannot step when final value has been reached"
-msStep (MS (Ite e1 _         : s)                env (Ret  (B True ))) = MS s env (Eval e1)
-msStep (MS (Ite _ e2         : s)                env (Ret  (B False))) = MS s env (Eval e2)
-msStep (MS (Ite _ e2         : s)                env (Ret  _        )) = error "No Boolean return value for the guard if the IF THEN ELSE expression"
-msStep (MS (Func f           : s)                env (Ret  val      )) = MS s env (Ret $ f val)
-msStep (MS (PartialFunc f e2 : s)                env (Ret  val      )) = MS (Func (\v -> applyFunc (applyFunc f val) v) : s) env (Eval e2)
-msStep (MS (AddEnv ident : PartialFunc _ e2 : s) env (Ret  val      )) = MS s (E.add env (ident, val) ) (Eval e2)
-msStep (MS s                                     _   (Ret  val      )) = error $ "Some other state when ret: " ++ show s ++ " :: " ++ show val
-msStep (MS s                                     env (Eval e       )) = case e of
+msStep (MS s env (Ret val)) = case s of 
+  []                                  -> error "Cannot step when final value has been reached"
+  (Ite e1 e2 : s)                     -> case val of 
+    B True  -> MS s env (Eval e1)
+    B False -> MS s env (Eval e2)
+    _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
+  Func f           : s                -> MS s env (Ret $ f val)
+  PartialFunc f e2 : s                -> MS (Func (\v -> applyFunc (applyFunc f val) v) : s) env (Eval e2)
+  AddEnv ident : PartialFunc _ e2 : s -> MS s (E.add env (ident, val) ) (Eval e2)
+  s                                   -> error $ "Some other state when returning: " ++ show s ++ " :: " ++ show val
+msStep (MS s env (Eval e)) = case e of
   Var ident -> case E.lookup env ident of 
     Just val -> MS s env (Ret val)
     Nothing  -> error "Invalid expression: free variable in expression"
