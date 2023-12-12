@@ -1,0 +1,28 @@
+cabal-version:       >=1.10
+name:                minhs1
+version:             0.1.0.0
+synopsis:            An interpreter for MinHS
+author:              Liam O'Connor
+maintainer:          Gabriele Keller <g.k.keller@uu.nl>, Tom Smeding <t.j.smeding@uu.nl>
+category:            Language
+build-type:          Simple
+
+executable minhs-1
+  main-is: Main.hs
+  other-modules:
+    MinHS.Env
+    MinHS.Evaluator
+    MinHS.Parse
+    MinHS.Pretty
+    MinHS.Syntax
+    MinHS.TypeChecker
+  build-depends:
+    base >= 4.11,
+    optparse-applicative >= 0.11,
+    prettyprinter >= 1.7.1,
+    prettyprinter-ansi-terminal >= 1.1.3,
+    containers >= 0.4,
+    parsec >= 3.1
+  hs-source-dirs: .
+  default-language: Haskell2010
+  ghc-options: -Wall
