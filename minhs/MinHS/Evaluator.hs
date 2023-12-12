@@ -36,26 +36,9 @@ data Value
   | Cons Integer Value
   | Func (Value -> Value)
   | PartialFunc Value Exp -- Expected Value to be Func with a Func inside (multiple arguments expected)
+  | AddEnv Id 
   -- Add other variants as needed
-  -- deriving (Show, Read)
-  deriving (Show)
-
--- instance Read Value where 
---   read v = 
---   readsPrec _ input =
---     let (_, r) = span (/= ' ') input
---     in if not $ null r case r of
---       "True" -> B True
---       "False" -> B False
---       "[" -> let (_, r') = span (/= ' ') (tail r)
---                   f  rr = case rr of 
---                 "]" -> Nil 
---                 x   -> let (dig, r'') = span (isDigit) c
---                         in Cons dig (f r'') 
---       other -> if isDigit other 
---         then I (read other :: Int )
---         else 
-
+  deriving (Show) -- deriving (Show, Read)
 
 prettyValue :: Value -> PP.Doc AnsiStyle
 prettyValue (I i) = numeric i
@@ -63,14 +46,16 @@ prettyValue (B b) = datacon (show b)
 prettyValue (Nil) = datacon "Nil"
 prettyValue (Cons x v) = PP.parens (datacon "Cons" PP.<+> numeric x PP.<+> prettyValue v)
 
-data MachineState = MS -- add the definition
+data MachineState = MS
   [Value] -- Control stack
   VEnv    -- Environment
-  -- Maybe Exp     -- Current expression
-  Mode    -- Mode the machine is in
+  Mode    -- Mode the machine is in (Exp or Value)
   deriving (Show)
   
-data Mode = Eval Exp | Ret Value deriving (Show)
+data Mode 
+  = Eval Exp  -- Mode to evaluate an expression
+  | Ret Value -- Mode to return a value
+  deriving (Show)
 
 msInitialState :: Exp -> MachineState
 msInitialState e = MS [] E.empty (Eval e) 
@@ -79,7 +64,7 @@ msInitialState e = MS [] E.empty (Eval e)
 -- checks whether machine is in final state
 msInFinalState :: MachineState -> Bool
 msInFinalState (MS _ _   (Eval _))    = False
-msInFinalState (MS s env (Ret value)) = null s && null env &&  isTerminatingValue value
+msInFinalState (MS s env (Ret value)) = null s &&  isTerminatingValue value
   where
     isTerminatingValue :: Value -> Bool
     isTerminatingValue (I _)         = True
@@ -97,27 +82,29 @@ msGetValue ms@(MS _ _ (Ret e)) =
     else error "Machine State is not in a final state."
 
 msStep :: MachineState -> MachineState
-msStep (MS []                     _   (Ret _ ) ) = error "Cannot step when final value has been reached"
-msStep (MS (Func f           : s) env (Ret val)) = MS s env (Ret $ f val)
-msStep (MS (PartialFunc f e2 : s) env (Ret val)) = MS ( Func (\v -> applyFunc (applyFunc f val) v) : s) env (Eval e2)
-msStep (MS s                      _   (Ret val)) = error $ "Some other state when ret: " ++ show s ++ " :: " ++ show val
-msStep (MS s                      env (Eval e) ) = case e of
+msStep (MS []                                    _   (Ret _ ) ) = error "Cannot step when final value has been reached"
+msStep (MS (Func f           : s)                env (Ret val)) = MS s env (Ret $ f val)
+msStep (MS (PartialFunc f e2 : s)                env (Ret val)) = MS (Func (\v -> applyFunc (applyFunc f val) v) : s) env (Eval e2)
+msStep (MS (AddEnv ident : PartialFunc _ e2 : s) env (Ret val)) = MS s (E.add env (ident, val) ) (Eval e2)
+msStep (MS s                                     _   (Ret val)) = error $ "Some other state when ret: " ++ show s ++ " :: " ++ show val
+msStep (MS s                                     env (Eval e) ) = case e of
   Var ident -> case E.lookup env ident of 
     Just val -> MS s env (Ret val)
     Nothing  -> error "Invalid expression: free variable in expression"
   Num i       -> MS s env (Ret $ I i) 
   Con "True"  -> MS s env (Ret $ B True)
   Con "False" -> MS s env (Ret $ B False)
-  Con "Nil"   -> MS s env (Ret Nil)         -- TODO: add Cons
+  Con "Nil"   -> MS s env (Ret Nil) 
   Con "Cons"  -> MS s env (Ret (Func (\val -> Func (\next -> runCons val next))))
   App e1 e2   -> MS (PartialFunc (Func id) e2:s) env (Eval e1)
   Prim op -> MS s env . Ret . Func $ if isUnaryOp op 
     then applyUnaryOp op
     else \x ->  Func (applyOp op x)
-    -- if isUnaryOp op 
-    -- then MS s env (Ret $ Func (applyUnaryOp op))
-    -- else MS s env (Ret $ Func (\x ->  Func (applyOp binOp x)))
-
+  Let bindings e -> if null bindings 
+    then MS s env (Eval e)
+    else let  (Bind ident _ _ e' : bs) = bindings
+              smallerLet               = PartialFunc (Func id) (Let bs e)
+          in  MS (AddEnv ident : smallerLet : s) env (Eval e')
   other -> error $ "Not Implemented: " ++ show other
 
 isUnaryOp :: Op -> Bool 
@@ -209,6 +196,40 @@ applyOp operator v v' = case operator of
 {- 
   Small Step Semantics, Manual steps
 -}
+
+{- Small Step Semantics: Let in Multiple -}
+-- . / o                                                                      => (Let [ Bind "x" (Type Int) (Num 1) : b : bs] (Var x))
+-- (Let [b : bs] (Var x)) | . / o                                             => Bind "x" (Type Int) (Num 1)
+-- (Let [b : bs] (Var x)) | . / o                                             => Bind "x" (Type Int) (Num 1)
+-- SetEnv "x" <> | (Let [b : bs] (Var x)) | . / o                             => (Num 1)
+-- SetEnv "x" <> | (Let [b : bs] (Var x)) | . / o                             <= Ret 1
+-- (Let [bs] (Var x)) | . / o                                                 => b
+-- . / x<-1;o                                                                 => (Let [bs] x) 
+-- ...
+-- SetEnv "ident" <> | (Let [] x) | . / x<-1;...;o                            <= Ret (Num 123)
+-- . / x<-1;...;o                                                             => Var x
+-- . / x<-1;...;o                                                             <= Ret 1
+-- Done
+
+-- (Let <> (Num 1) ] x) | . / o                                               => [ Bind "x" (Type Int) (Num 1)]]
+-- (Let <> (Num 1) ] x) | . / o                                               => Bind "x" (Type Int) (Num 1) 
+-- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               => (Num 1)
+-- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               <= Ret 1
+--  . / x<-1;o                                                                <= Var x 
+--  . / x<-1;o                                                                <= 1
+--  . / o                                                                     <= 1
+
+
+{- Small Step Semantics: Let in -}
+-- . / o                                                                      => (Let [ Bind "x" (Type Int) (Num 1)]] x)
+-- (Let <> (Num 1) ] x) | . / o                                               => [ Bind "x" (Type Int) (Num 1)]]
+-- (Let <> (Num 1) ] x) | . / o                                               => Bind "x" (Type Int) (Num 1) 
+-- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               => (Num 1)
+-- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               <= Ret 1
+--  . / x<-1;o                                                                <= Var x 
+--  . / x<-1;o                                                                <= 1
+--  . / o                                                                     <= 1
+
 
 {- Small Step Semantics: Sub -}
 -- .                                                                        => (App (App (Prim Sub) (Num 3)) (Num 2))
