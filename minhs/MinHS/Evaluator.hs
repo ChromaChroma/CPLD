@@ -95,66 +95,51 @@ msStep :: MachineState -> MachineState
 msStep (MS stack env (Ret (Application ex))) = MS stack env (Eval ex) -- Used for ITE logic, 
 msStep (MS stack env (Ret val)) = case stack of 
   []                                -> error "Cannot step when final value has been reached"
-  EnvValue env' : s -> MS s env' (Ret val) -- Recover previous env
-  AddEnv ident : AddEnv identt : s -> MS (AddEnv identt : s) (E.add env (ident, val) ) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
+  EnvValue env' : s                 -> MS s env' (Ret val) -- Recover previous env
+  AddEnv ident : AddEnv identt : s  -> MS (AddEnv identt : s) (E.add env (ident, val) ) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
   AddEnv ident : Application e2 : s -> MS s (E.add env (ident, val) ) (Eval e2)
-
-  Closure env' ident arg ex : s -> 
-    let newEnv  = E.add env' (ident, Closure env ident arg ex)
-        newEnv' = E.add newEnv (arg, val)
-    in  MS (EnvValue env : s) newEnv' (Eval ex) 
-
-  Func f : s -> MS s env (Ret $ f val)
-  Application e2 : s -> case val of 
-    c@(Closure _ _ _ _) -> MS (c : s) env (Eval e2)
-    func                -> MS (Func (\v -> applyFunc func v) : s) env (Eval e2) --Assumed func will be a Func
-
-    
-
-
+  Closure env' ident arg ex : s     -> let  newEnv  = E.add env' (ident, Closure env ident arg ex)
+                                            newEnv' = E.add newEnv (arg, val)
+                                        in  MS (EnvValue env : s) newEnv' (Eval ex) 
+  Func f : s                        -> MS s env (Ret $ f val)
+  Application e2 : s                -> case val of 
+                                        c@(Closure _ _ _ _) -> MS (c : s) env (Eval e2)
+                                        func                -> MS (Func (\v -> applyFunc func v) : s) env (Eval e2) --Assumed func will be a Func
   s                                 -> error $ "Some other state when returning: " ++ show s ++ " :: " ++ show val
+
 msStep (MS s env (Eval e)) = case e of
-  Var ident                  -> case E.lookup env ident of 
-                                  Just val -> MS s env (Ret val)
-                                  Nothing  -> error $ "Invalid expression: free variable in expression: " ++ show ident
-  Num i                      -> MS s env (Ret $ I i) 
-  Con "True"                 -> MS s env (Ret $ B True)
-  Con "False"                -> MS s env (Ret $ B False)
-  Con "Nil"                  -> MS s env (Ret Nil) 
-  Con "Cons"                 -> MS s env (Ret (Func (\val -> Func (\next -> runCons val next))))
-  
-  Prim op                    -> let opAsValueFunc = Func $ if isUnaryOp op 
-                                                            then applyUnaryOp op 
-                                                            else \x -> Func (applyOp op x)
-                                in MS s env (Ret opAsValueFunc)
+  Var ident                         -> case E.lookup env ident of 
+                                         Just val -> MS s env (Ret val)
+                                         Nothing  -> error $ "Invalid expression: free variable in expression: " ++ show ident
+  Num i                             -> MS s env (Ret $ I i) 
+  Con "True"                        -> MS s env (Ret $ B True)
+  Con "False"                       -> MS s env (Ret $ B False)
+  Con "Nil"                         -> MS s env (Ret Nil) 
+  Con "Cons"                        -> MS s env (Ret (Func (\val -> Func (\next -> runCons val next))))
+  Prim op                           -> let opAsValueFunc = Func $ if isUnaryOp op 
+                                                                   then applyUnaryOp op 
+                                                                   else \x -> Func (applyOp op x)
+                                       in MS s env (Ret opAsValueFunc)
+  App e1 e2                         -> MS (Application e2 : s) env (Eval e1)
+  If g e1 e2                        -> let iteFunc = Func $ \b -> case b of 
+                                             B True  -> Application e1
+                                             B False -> Application e2
+                                             _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
+                                       in  MS (iteFunc : s) env (Eval g)
 
-  App e1 e2                  -> MS (Application e2 : s) env (Eval e1)
-  
-  If g e1 e2                 -> 
-    let iteFunc = Func $ \b -> case b of 
-            B True  -> Application e1
-            B False -> Application e2
-            _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
-    in  MS (iteFunc : s) env (Eval g)
-
-  Let [] ex                  -> MS s env (Eval ex)
-  Let (Bind ident _ [] e' : bs) ex -> case e' of 
-    -- Case of e' being a function
-    -- r@(Recfun (Bind identt _ args ex) ) -> MS (AddEnv identt : Application r : s) env (Eval $ Let bs ex) 
-    r@(Recfun (Bind identt _ _ _) ) -> MS (AddEnv identt : AddEnv ident : Application (Let bs ex) : s) env (Eval r)
-    -- Case of e' being a value / expression that can be computed
-    e''                                 -> MS (AddEnv ident : Application (Let bs ex) : s) env (Eval e')      
-  Let (Bind ident _ _ _ : _) _ -> error "Should create function, (value), but not implemented yet"
-
-
-  Recfun (Bind _     _ [] ex)       -> MS s env (Eval ex) -- Eval ex, as there are no moer input args
+  Let [] ex                         -> MS s env (Eval ex)
+  Let (Bind ident _ [] e' : bs) ex  -> case e' of 
+                                        -- Case of e' being a function
+                                        r@(Recfun (Bind identt _ _ _) ) -> MS (AddEnv identt : AddEnv ident : Application (Let bs ex) : s) env (Eval r)
+                                        -- Case of e' being a value / expression that can be computed
+                                        e''                             -> MS (AddEnv ident : Application (Let bs ex) : s) env (Eval e')      
+  Let (Bind ident _ _ _ : _) _      -> error "Should create function, (value), but not implemented yet"
+  Recfun (Bind _     _ [] ex)       -> MS s env (Eval ex) -- Eval ex, as there are no more input args
   Recfun (Bind ident _ [arg] ex)    -> MS s env (Ret $ Closure env ident arg ex)
+
   -- Recfun (Bind ident t (arg : args) ex) ->               --Multiple Arguments not implemented yet
-
+  
   other                      -> error $ "Not Implemented: " ++ show other
-
-
-
 
 
 isUnaryOp :: Op -> Bool 
@@ -208,7 +193,7 @@ applyOp operator v v' = case operator of
   Ne    -> applyInequality    v v'
   _     -> error "Cannot run unary operator as binary operator"
   where 
-    applyDiv ::  Value -> Value -> Value
+    applyDiv :: Value -> Value -> Value
     applyDiv _      (I 0)  = error "Cannot divide by zero"
     applyDiv (I i1) (I i2) = I (i1 `div` i2)
     applyDiv (Func f) v2   = Func $ \x -> applyDiv (f x) v2
@@ -318,11 +303,50 @@ applyOp operator v v' = case operator of
 -- (App <> e2) | .                        <= Ret (\x' -> op e1 x')
 -- .                                      <= Ret (op e1 e2)
 
--- debug message:MS [] (Env (fromList [])) (Eval (Let [Bind "g" (Arrow (TypeCon Int) (TypeCon Int)) [] (Recfun (Bind "f" (Arrow (TypeCon Int) (TypeCon Int)) ["x"] (App (App (Prim Add) (Var "x")) (Var "x"))))] (App (Var "g") (Num 1))))
--- debug message:MS [AddEnv "f",AddEnv "f",Application (Let [] (App (Var "g") (Num 1)))] (Env (fromList [])) (Eval (Recfun (Bind "f" (Arrow (TypeCon Int) (TypeCon Int)) ["x"] (App (App (Prim Add) (Var "x")) (Var "x")))))
--- debug message:MS [AddEnv "f",AddEnv "f",Application (Let [] (App (Var "g") (Num 1)))] (Env (fromList [])) (Ret (Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x"))))
--- debug message:MS [AddEnv "f",Application (Let [] (App (Var "g") (Num 1)))] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Ret (Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x"))))
--- debug message:MS [] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Eval (Let [] (App (Var "g") (Num 1))))
--- debug message:MS [] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Eval (App (Var "g") (Num 1)))
--- debug message:MS [Application (Num 1)] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Eval (Var "g"))
--- minhs-1.exe: Invalid expression: free variable in expression: "g"
+debug message:MS 
+  [   Application (App (Prim Head) (Var "xs"))
+    , Func <function>
+    , Application (App (Var "map2") (App (Prim Tail) (Var "xs")))
+    , EnvValue (Env (fromList [  ("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1)))
+                                ,("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))))
+                                ,("map2",Closure (Env (fromList [
+                                                                  ("mapInc",Closure (Env (fromList [("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1))),("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))
+                                                                  ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))
+                                                                ])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))
+                                                              )
+                                ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))
+                              ]))
+    ,Func <function>
+    ,EnvValue (Env (fromList [ ("mapInc",Closure (Env (fromList [  ("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1)))
+                                                                  ,("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))))
+                                                                  ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))
+                                                                ]))   "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))
+                                                              )
+                              ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))
+                            ]))]
+  (Env (fromList [
+    ("map2",Closure (Env (fromList [   ("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1)))
+                                      ,("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))))
+                                      ,("map2",Closure (Env (fromList [("mapInc",Closure (Env (fromList [("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1))),("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))
+                                      ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))
+                                    ])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))
+  ,("mapInc",Closure (Env (fromList [  ("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1)))
+                                      ,("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))))
+                                      ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))
+                                    ])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))
+  ,("xs",Cons 1 (Cons 2 Nil))
+  
+  ])) 
+  (Eval (Var "f"))
+
+
+debug message:MS 
+  [Func <function>
+  ,EnvValue (Env (fromList [("mapInc",Closure (Env (fromList [("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1))),("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))]))
+  ] 
+  (Env (fromList [
+    ("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1)))
+    ,("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))))
+    ,("map2",Closure (Env (fromList [("mapInc",Closure (Env (fromList [("f",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "inc" "x" (App (App (Prim Add) (Var "x")) (Num 1))),("map",Closure (Env (fromList [("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map" "f" (Recfun (Bind "map2" (Arrow (TypeApp (TypeCon List) (TypeCon Int)) (TypeApp (TypeCon List) (TypeCon Int))) ["xs"] (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs")))))),("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) "map2" "xs" (If (App (Prim Null) (Var "xs")) (Con "Nil") (App (App (Con "Cons") (App (Var "f") (App (Prim Head) (Var "xs")))) (App (Var "map2") (App (Prim Tail) (Var "xs"))))))
+    ,("xs",Cons 0 (Cons 1 (Cons 2 Nil)))])) 
+  (Eval (App (Prim Null) (Var "xs")))
