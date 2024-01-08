@@ -1,4 +1,4 @@
-module MinHS.Evaluator where
+module MinHS.EvaluatorOG where
 
 import Data.Bool (Bool (False, True))
 import Debug.Trace
@@ -19,7 +19,7 @@ evalE :: Exp -> Value
 evalE expr = loop (msInitialState expr)
   where
     loop ms =
-      --  (trace $ "debug message:" ++ show ms) $  -- uncomment this line and pretty print the machine state/parts of it to
+      (trace $ "debug message:" ++ show ms) $  -- uncomment this line and pretty print the machine state/parts of it to
       -- observe the machine states
       if (msInFinalState newMsState)
         then msGetValue newMsState
@@ -34,21 +34,13 @@ data Value
   | B Bool
   | Nil
   | Cons Integer Value
-
-  | EnvValue VEnv
-  | Closure VEnv String String Exp  
-
+  | Env VEnv
   | Func (Value -> Value)
-  | Application Exp 
-
+  | PartialFunc Exp VEnv 
+  | Closure String String Exp VEnv 
   | AddEnv Id 
-
---   | Env VEnv
---   | Func (Value -> Value)
---   | Application Exp VEnv 
---   | Closure String String Exp VEnv 
---   | AddEnv Id 
---   | Ite Exp Exp -- First is True expr. Second is False expr
+  | Ite Exp Exp -- First is True expr. Second is False expr
+  -- Add other variants as needed
   deriving (Show) -- deriving (Show, Read)
 
 prettyValue :: Value -> PP.Doc AnsiStyle
@@ -92,65 +84,77 @@ msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms
   else error "Machine State is not in a final state."
 
 msStep :: MachineState -> MachineState
-msStep (MS stack env (Ret (Application ex))) = MS stack env (Eval ex) -- Used for ITE logic, 
 msStep (MS stack env (Ret val)) = case stack of 
   []                                -> error "Cannot step when final value has been reached"
-  EnvValue env' : s -> MS s env' (Ret val) -- Recover previous env
-  AddEnv ident : AddEnv identt : s -> MS (AddEnv identt : s) (E.add env (ident, val) ) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
-  AddEnv ident : Application e2 : s -> MS s (E.add env (ident, val) ) (Eval e2)
+  (Ite e1 e2 : s)                   -> case val of 
+                                        B True  -> MS s env (Eval e1)
+                                        B False -> MS s env (Eval e2)
+                                        _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
+  Func f           : s              -> MS s env (Ret $ f val)
+  PartialFunc e2 env': s            -> MS (Func (\v -> applyFunc val v) : s) env' (Eval e2)
+  AddEnv ident : PartialFunc e2 env' : s -> MS s (E.add env' (ident, val) ) (Eval e2)
 
-  Closure env' ident arg ex : s -> 
-    let newEnv  = E.add env' (ident, Closure env ident arg ex)
-        newEnv' = E.add newEnv (arg, val)
-    in  MS (EnvValue env : s) newEnv' (Eval ex) 
+  Env env : s                       -> MS s env (Ret val)
 
-  Func f : s -> MS s env (Ret $ f val)
-  Application e2 : s -> case val of 
-    c@(Closure _ _ _ _) -> MS (c : s) env (Eval e2)
-    func                -> MS (Func (\v -> applyFunc func v) : s) env (Eval e2) --Assumed func will be a Func
-
-    
-
+  Closure ident arg ex env  : s -> 
+    let newEnv  = E.add env (arg, Closure ident arg ex env) -- Add current abstraction (func) to the env
+        newEnv' = E.add env (ident, val)
+    in  MS (Env env : s) newEnv' (Eval ex) 
 
   s                                 -> error $ "Some other state when returning: " ++ show s ++ " :: " ++ show val
 msStep (MS s env (Eval e)) = case e of
   Var ident                  -> case E.lookup env ident of 
                                   Just val -> MS s env (Ret val)
-                                  Nothing  -> error $ "Invalid expression: free variable in expression: " ++ show ident
+                                  Nothing  -> error "Invalid expression: free variable in expression"
   Num i                      -> MS s env (Ret $ I i) 
   Con "True"                 -> MS s env (Ret $ B True)
   Con "False"                -> MS s env (Ret $ B False)
   Con "Nil"                  -> MS s env (Ret Nil) 
   Con "Cons"                 -> MS s env (Ret (Func (\val -> Func (\next -> runCons val next))))
-  
-  Prim op                    -> let opAsValueFunc = Func $ if isUnaryOp op 
-                                                            then applyUnaryOp op 
-                                                            else \x -> Func (applyOp op x)
-                                in MS s env (Ret opAsValueFunc)
-
-  App e1 e2                  -> MS (Application e2 : s) env (Eval e1)
-  
-  If g e1 e2                 -> 
-    let iteFunc = Func $ \b -> case b of 
-            B True  -> Application e1
-            B False -> Application e2
-            _       -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
-    in  MS (iteFunc : s) env (Eval g)
+  App e1 e2                  -> MS (PartialFunc e2 env: s) env (Eval e1)
+  Prim op                    -> let opAsValue = if isUnaryOp op then applyUnaryOp op else \x -> Func (applyOp op x)
+                                in MS s env (Ret $ Func opAsValue)
+  If g e1 e2                 -> MS (Ite e1 e2 : s) env (Eval g)
 
   Let [] ex                  -> MS s env (Eval ex)
   Let (Bind ident _ [] e' : bs) ex -> case e' of 
-    -- Case of e' being a function
-    -- r@(Recfun (Bind identt _ args ex) ) -> MS (AddEnv identt : Application r : s) env (Eval $ Let bs ex) 
-    r@(Recfun (Bind identt _ _ _) ) -> MS (AddEnv identt : AddEnv ident : Application (Let bs ex) : s) env (Eval r)
-    -- Case of e' being a value / expression that can be computed
-    e''                                 -> MS (AddEnv ident : Application (Let bs ex) : s) env (Eval e')      
-  Let (Bind ident _ _ _ : _) _ -> error "Should create function, (value), but not implemented yet"
+                                        -- Case of e' being a function
+                                        -- r@(Recfun (Bind identt _ args ex) ) -> MS (AddEnv identt : PartialFunc r : s) env (Eval $ Let bs ex) 
+                                        r@(Recfun (Bind identt _ _ _) ) -> MS (AddEnv identt : PartialFunc (Let bs ex) env : s) env (Eval r) --(Ret $ PartialFunc r env) 
+                                        -- Case of e' being a value / expression that can be computed
+                                        e''                                 -> MS (AddEnv ident : PartialFunc (Let bs ex) env: s) env (Eval e')      
+  Let (Bind ident _ args e' : bs) _ -> error "Should create function, (value), but not implemented yet"
+
+  -- Recfun, If first arg is in env, continue, if not, save as partialfuncMet de env van nu
+
+  Recfun (Bind ident _ [] ex)       -> MS s env (Eval ex) -- Eval ex, as there are no moer input args
+  Recfun (Bind ident t [arg] ex)    -> MS s env (Ret $ Closure ident arg ex env)
+  -- Recfun (Bind ident t (arg : args) ex) -> 
 
 
-  Recfun (Bind _     _ [] ex)       -> MS s env (Eval ex) -- Eval ex, as there are no moer input args
-  Recfun (Bind ident _ [arg] ex)    -> MS s env (Ret $ Closure env ident arg ex)
-  -- Recfun (Bind ident t (arg : args) ex) ->               --Multiple Arguments not implemented yet
 
+
+  -- Recfun (Bind ident _ [] ex)           -> MS s env (Eval ex) -- Eval ex, as there are no moer input args
+  -- Recfun (Bind ident t (arg : args) ex) -> 
+  --   let nextRecfun = (trace $ ":: Debug inside: " ++ show ex) $ Recfun (Bind ident t (args) ex)
+  --   in  MS (AddEnv arg : PartialFunc nextRecfun env : s) env (Eval e) 
+
+
+  -- Recfun (Bind ident t (arg : args) ex) -> 
+  --  let nextRecfun = Recfun (Bind ident t (args) ex)
+
+  --     in MS (AddEnv arg : PartialFunc nextRecfun env : s) env (Eval e) 
+
+
+  --      addArgsToEnv = 
+  --                   foldr 
+  --                     (\arg acc -> Func id : AddEnv arg  : acc) 
+  --                     (AddEnv ident : PartialFunc ex : s) 
+  --                     args
+
+  --   in  MS addArgsToEnv env (Eval ex) 
+
+ 
   other                      -> error $ "Not Implemented: " ++ show other
 
 
@@ -317,12 +321,3 @@ applyOp operator v v' = case operator of
 -- (App <> e2) | .                        => (\x' -> op e1 x')
 -- (App <> e2) | .                        <= Ret (\x' -> op e1 x')
 -- .                                      <= Ret (op e1 e2)
-
--- debug message:MS [] (Env (fromList [])) (Eval (Let [Bind "g" (Arrow (TypeCon Int) (TypeCon Int)) [] (Recfun (Bind "f" (Arrow (TypeCon Int) (TypeCon Int)) ["x"] (App (App (Prim Add) (Var "x")) (Var "x"))))] (App (Var "g") (Num 1))))
--- debug message:MS [AddEnv "f",AddEnv "f",Application (Let [] (App (Var "g") (Num 1)))] (Env (fromList [])) (Eval (Recfun (Bind "f" (Arrow (TypeCon Int) (TypeCon Int)) ["x"] (App (App (Prim Add) (Var "x")) (Var "x")))))
--- debug message:MS [AddEnv "f",AddEnv "f",Application (Let [] (App (Var "g") (Num 1)))] (Env (fromList [])) (Ret (Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x"))))
--- debug message:MS [AddEnv "f",Application (Let [] (App (Var "g") (Num 1)))] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Ret (Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x"))))
--- debug message:MS [] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Eval (Let [] (App (Var "g") (Num 1))))
--- debug message:MS [] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Eval (App (Var "g") (Num 1)))
--- debug message:MS [Application (Num 1)] (Env (fromList [("f",Closure (Env (fromList [])) "f" "x" (App (App (Prim Add) (Var "x")) (Var "x")))])) (Eval (Var "g"))
--- minhs-1.exe: Invalid expression: free variable in expression: "g"
