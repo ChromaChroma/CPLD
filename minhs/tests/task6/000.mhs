@@ -1,4 +1,4 @@
-main :: [Int]
-  = let ones :: [Int] = recfun ones :: [Int] 
-          = Cons 1 ones;
-     in Cons (head ones) (Cons (head (tail ones)) Nil);
+-- main :: [Int]
+--   = let ones :: [Int] = recfun ones :: [Int] 
+--           = Cons 1 ones;
+--      in Cons (head ones) (Cons (head (tail ones)) Nil);

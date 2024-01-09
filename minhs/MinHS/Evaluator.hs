@@ -85,19 +85,16 @@ msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms
 msStep :: MachineState -> MachineState
 msStep (MS stack env (Ret (Application ex))) = MS stack env (Eval ex) -- Used for ITE logic, 
 msStep (MS stack env (Ret val)) = case stack of
-  []                                -> error "Cannot step when final value has been reached"
-  EnvValue env' : s                 -> MS s env' (Ret val) -- Recover previous env
-  AddEnv ident : AddEnv identt : s  -> MS (AddEnv identt : s) (env `E.add` (ident, val) ) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
-  AddEnv ident : Application e2 : s -> MS s (env `E.add` (ident, val) ) (Eval e2)
+  []                                              -> error "Cannot step when final value has been reached"
+  EnvValue env' : s                               -> MS s env' (Ret val) -- Recover previous env
+  AddEnv ident : AddEnv identt : s                -> MS (AddEnv identt : s) (env `E.add` (ident, val) ) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
+  AddEnv ident : Application e2 : s               -> MS s (env `E.add` (ident, val) ) (Eval e2)
   --Hardcoded on 1 argument closure
-  Closure _ (Bind _ _ [] _) : _                       -> error "Trying to apply closure without arguments on Return Value"
-  c@(Closure env' (Bind ident _t [arg] ex)) : s       ->
-                                                        let newEnv = env' `E.add` (arg, val) -- newEnv = env' `E.add` (ident, c) `E.add` (arg, val)
-                                                        in  MS (EnvValue env : s) newEnv (Eval ex)
-  c@(Closure env' (Bind ident _t (arg: args) ex)) : s ->
-                                                        let  newEnv = env' `E.add` (arg, val) -- newEnv = env' `E.add` (ident, c) `E.add` (arg, val)
-                                                        in  MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind ident _t args ex)) --TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
-
+  Closure _ (Bind _ _ [] _) : _                   -> error "Trying to apply closure without arguments on Return Value"
+  Closure env' (Bind _ _t [arg] ex) : s           -> let newEnv = env' `E.add` (arg, val) 
+                                                      in MS (EnvValue env : s) newEnv (Eval ex)
+  Closure env' (Bind ident _t (arg: args) ex) : s -> let newEnv = env' `E.add` (arg, val) 
+                                                      in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind ident _t args ex)) --TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
   Func f : s                        -> MS s env (Ret $ f val)
   Application e2 : s                -> case val of
                                         c@Closure {} -> MS (c : s) env (Eval e2)
@@ -107,33 +104,21 @@ msStep (MS s env (Eval e)) = case e of
   Var ident                         -> case E.lookup env ident of
                                          Just val -> MS s env (Ret val)
                                          Nothing  -> error $ "Invalid expression: free variable in expression: " ++ show ident
-  Num i                               -> MS s env (Ret $ I i)
-  Con "True"                          -> MS s env (Ret $ B True)
-  Con "False"                         -> MS s env (Ret $ B False)
-  Con "Nil"                           -> MS s env (Ret Nil)
-  Con "Cons"                          -> MS s env (Ret (Func (Func . runCons)))
-  Prim op                             -> MS s env (Ret $ primOpFunc op)
-  App e1 e2                           -> MS (Application e2 : s) env (Eval e1)
-  If g e1 e2                          -> MS (iteFunc e1 e2 : s) env (Eval g)
-  Let [] ex                           -> MS s env (Eval ex)
-    -- TODO: Only implemented for single argument (just like Recfun)
-  Let (Bind ident _ [] ex : bs) body  -> case ex of
+  Num i                                 -> MS s env (Ret $ I i)
+  Con "True"                            -> MS s env (Ret $ B True)
+  Con "False"                           -> MS s env (Ret $ B False)
+  Con "Nil"                             -> MS s env (Ret Nil)
+  Con "Cons"                            -> MS s env (Ret (Func (Func . runCons)))
+  Prim op                               -> MS s env (Ret $ primOpFunc op)
+  App e1 e2                             -> MS (Application e2 : s) env (Eval e1)
+  If g e1 e2                            -> MS (iteFunc e1 e2 : s) env (Eval g)
+  Let [] ex                             -> MS s env (Eval ex)
+  Let (Bind ident _ [] ex : bs) body    -> case ex of
                                         r@(Recfun (Bind identt _ _ _) ) -> MS (AddEnv identt : AddEnv ident : Application (Let bs body) : s) env (Eval r)
                                         _                               -> MS (AddEnv ident : Application (Let bs body) : s) env (Eval ex)
   Let (Bind ident _t args ex : bs) body -> MS (AddEnv ident : Application (Let bs body) : s) env (Ret $ Closure env (Bind ident _t args ex))
-  -- Let (Bind ident _ [arg] ex: bs) body  -> MS (AddEnv ident : Application (Let bs body) : s) env (Ret $ Closure env ident arg ex)
-
-  r@(Recfun (Bind identt _t [] ex) )-> let newEnv = env `E.add` (identt, Application r)
-                                        in MS s newEnv (Eval ex) -- Eval ex, as there are no more input args
-  r@(Recfun b@(Bind identt _t args ex)) -> let newEnv = env `E.add` (identt, Application r)
-                                        in MS s env (Ret $ Closure newEnv b)
-
-  -- Let (Bind ident _ [] ex : bs) body  -> case ex of
-  --                                       r@(Recfun b@(Bind identt _ _ _) ) -> let newEnv = env `E.add` (identt, Closure newEnv b)
-  --                                                                             in MS (AddEnv identt : AddEnv ident : Application (Let bs body) : s) env (Eval r)
-  --                                       _                               -> MS (AddEnv ident : Application (Let bs body) : s) env (Eval ex) 
-
-
+  r@(Recfun (Bind identt _t [] ex) )    -> MS s (env `E.add` (identt, Application r)) (Eval ex) -- Eval ex, as there are no more input args
+  r@(Recfun b@(Bind identt _t args ex)) -> MS s env (Ret $ Closure (env `E.add` (identt, Application r)) b)
   other                      -> error $ "Not Implemented: " ++ show other
   where
     primOpFunc op = Func $ if isUnaryOp op
