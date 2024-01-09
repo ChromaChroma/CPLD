@@ -32,3 +32,4 @@ elif test -z "$EXECUTABLE"; then
 fi
 
 $RUNHASKELL -i./tests/driver ./tests/driver/Check.hs "$@" "${EXECUTABLE[@]}"
+exec $SHELL
