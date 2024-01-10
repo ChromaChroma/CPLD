@@ -42,7 +42,7 @@ data Value
   | Nil
   | Cons Integer Value
   | EnvValue VEnv
-  | Closure VEnv Bind -- String String Exp
+  | Closure VEnv Bind
   | Func (Value -> Value)
   | Application Exp
   | AddEnv Id
@@ -62,74 +62,75 @@ data Mode
 msInitialState :: Exp -> MachineState
 msInitialState e = MS [] E.empty (Eval e)
 
-
 -- checks whether machine is in final state
 msInFinalState :: MachineState -> Bool
 msInFinalState (MS _ _   (Eval _))    = False
-msInFinalState (MS s _ (Ret value)) = null s &&  isTerminatingValue value
+msInFinalState (MS s _ (Ret value)) = null s && isTerminatingValue value
   where
     isTerminatingValue :: Value -> Bool
     isTerminatingValue (I _)         = True
     isTerminatingValue (B _)         = True
-    isTerminatingValue Nil         = True
+    isTerminatingValue Nil           = True
     isTerminatingValue (Cons _ next) = isTerminatingValue next
     isTerminatingValue _             = False
 
 -- returns the final value if machine is in final state. If the machine is not in final state, throw an error
 msGetValue :: MachineState -> Value
-msGetValue (MS _ _ (Eval _))   = error "Machine State is not in a final state: Machine is in Eval State"
-msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms
-  then e
-  else error "Machine State is not in a final state."
+msGetValue (MS _ _ (Eval _))   = error "AbstractMachineError::Machine State is not in a final state, Machine is in Eval State"
+msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms then e else error "AbstractMachineError:: Machine State is not in a final state"
 
 msStep :: MachineState -> MachineState
-msStep (MS stack env (Ret (Application ex))) = MS stack env (Eval ex) -- Used for ITE logic, 
-msStep (MS stack env (Ret val)) = case stack of
-  []                                              -> error "Cannot step when final value has been reached"
-  EnvValue env' : s                               -> MS s env' (Ret val) -- Recover previous env
-  AddEnv ident : AddEnv identt : s                -> MS (AddEnv identt : s) (env `E.add` (ident, val) ) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
-  AddEnv ident : Application e2 : s               -> MS s (env `E.add` (ident, val) ) (Eval e2)
-  --Hardcoded on 1 argument closure
-  Closure _ (Bind _ _ [] _) : _                   -> error "Trying to apply closure without arguments on Return Value"
-  Closure env' (Bind _ _t [arg] ex) : s           -> let newEnv = env' `E.add` (arg, val) 
-                                                      in MS (EnvValue env : s) newEnv (Eval ex)
-  Closure env' (Bind ident _t (arg: args) ex) : s -> let newEnv = env' `E.add` (arg, val) 
-                                                      in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind ident _t args ex)) --TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
-  Func f : s                        -> MS s env (Ret $ f val)
-  Application e2 : s                -> case val of
-                                        c@Closure {} -> MS (c : s) env (Eval e2)
-                                        func         -> MS (Func (applyFunc func) : s) env (Eval e2) --Assumed func will be a Func
-  s                                 -> error $ "Some other state when returning: " ++ show s ++ " :: " ++ show val
-msStep (MS s env (Eval e)) = case e of
-  Var ident                         -> case E.lookup env ident of
-                                         Just val -> MS s env (Ret val)
-                                         Nothing  -> error $ "Invalid expression: free variable in expression: " ++ show ident
-  Num i                                 -> MS s env (Ret $ I i)
-  Con "True"                            -> MS s env (Ret $ B True)
-  Con "False"                           -> MS s env (Ret $ B False)
-  Con "Nil"                             -> MS s env (Ret Nil)
-  Con "Cons"                            -> MS s env (Ret (Func (Func . runCons)))
-  Prim op                               -> MS s env (Ret $ primOpFunc op)
-  App e1 e2                             -> MS (Application e2 : s) env (Eval e1)
-  If g e1 e2                            -> MS (iteFunc e1 e2 : s) env (Eval g)
-  Let [] ex                             -> MS s env (Eval ex)
-  Let (Bind ident _ [] ex : bs) body    -> case ex of
-                                        r@(Recfun (Bind identt _ _ _) ) -> MS (AddEnv identt : AddEnv ident : Application (Let bs body) : s) env (Eval r)
-                                        _                               -> MS (AddEnv ident : Application (Let bs body) : s) env (Eval ex)
-  Let (Bind ident _t args ex : bs) body -> MS (AddEnv ident : Application (Let bs body) : s) env (Ret $ Closure env (Bind ident _t args ex))
-  r@(Recfun (Bind identt _t [] ex) )    -> MS s (env `E.add` (identt, Application r)) (Eval ex) -- Eval ex, as there are no more input args
-  r@(Recfun b@(Bind identt _t args ex)) -> MS s env (Ret $ Closure (env `E.add` (identt, Application r)) b)
-  other                      -> error $ "Not Implemented: " ++ show other
-  where
-    primOpFunc op = Func $ if isUnaryOp op
-      then applyUnaryOp op
-      else Func . applyOp op
+-- ======Ret Mode Patterns===== --
+msStep (MS s                                                  env (Ret (Application ex))) = MS s env (Eval ex)
+msStep (MS []                                                 _   (Ret _               )) = error "IllegalOperation::Cannot step when final state has been reached"
+msStep (MS (EnvValue env'                                : s) _   (Ret val             )) = MS s env' (Ret val) -- Recover previous env
+msStep (MS (AddEnv ident : AddEnv identt                 : s) env (Ret val             )) = MS (AddEnv identt : s) (env `E.add` (ident, val)) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
+msStep (MS (AddEnv ident : Application e2                : s) env (Ret val             )) = MS s (env `E.add` (ident, val)) (Eval e2)
+msStep (MS (Closure _    (Bind _     _  []           _ ) : _) _   (Ret _               )) = error "IllegalOperation::Cannot apply closure without arguments on a return value"
+msStep (MS (Closure env' (Bind _     _t [arg]        ex) : s) env (Ret val             )) = MS (EnvValue env : s) (env' `E.add` (arg, val)) (Eval ex)
+msStep (MS (Closure env' (Bind ident _t (arg : args) ex) : s) env (Ret val             )) = let newEnv = env' `E.add` (arg, val)
+                                                                                            in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind ident _t args ex))--TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
+msStep (MS (Func f                                       : s) env (Ret val             )) = MS s env (Ret $ f val)
+msStep (MS (Application e2                               : s) env (Ret val             )) = case val of
+                                                                                              c@Closure {} -> MS (c : s) env (Eval e2)
+                                                                                              func -> MS (Func (applyFunc func) : s) env (Eval e2) --Assumed func will be a Func
+msStep (MS (sf                                           : _) _   (Ret val             )) = error $ "NotImplemented::Not implemented return state: { stack: " ++ show sf ++ " , return value: " ++ show val ++ " }"
 
-    iteFunc e1 e2 = Func $ \case
-      B True -> Application e1
-      B False -> Application e2
-      _ -> error "No Boolean return value for the guard if the IF THEN ELSE expression"
+-- ======Eval Mode Patterns===== --
+msStep (MS s env (Eval (Var ident                             ))) = MS s env (Ret $ lookupVar env ident)
+msStep (MS s env (Eval (Num i                                 ))) = MS s env (Ret $ I i)
+msStep (MS s env (Eval (Con "True"                            ))) = MS s env (Ret $ B True)
+msStep (MS s env (Eval (Con "False"                           ))) = MS s env (Ret $ B False)
+msStep (MS s env (Eval (Con "Nil"                             ))) = MS s env (Ret Nil)
+msStep (MS s env (Eval (Con "Cons"                            ))) = MS s env (Ret (Func (Func . runCons)))
+msStep (MS s env (Eval (Prim op                               ))) = MS s env (Ret (Func $ if isUnaryOp op then applyUnaryOp op else Func . applyOp op))
+msStep (MS s env (Eval (App e1 e2                             ))) = MS (Application e2 : s) env (Eval e1)
+msStep (MS s env (Eval (If g e1 e2                            ))) = MS (iteFunc : s) env (Eval g)
+                                                                    where iteFunc = Func $ \case
+                                                                            B True -> Application e1
+                                                                            B False -> Application e2
+                                                                            _ -> error "IllegalType::Expected Bool return value (For resolving the guard of IfThenElse)"
+msStep (MS s env (Eval (Let [] ex                            ))) = MS s env (Eval ex)
+msStep (MS s env (Eval (Let (Bind ident   _  [] ex : bs) body))) = MS (AddEnv ident : Application (Let bs body) : s) env (Eval ex)
+msStep (MS s env (Eval (Let (b@(Bind ident _ _ _ ) : bs) body))) = MS (AddEnv ident : Application (Let bs body) : s) env (Ret $ Closure env b)
+msStep (MS s env (Eval r@(Recfun (Bind identt _t [] ex)      ))) = MS s (env `E.add` (identt, Application r)) (Eval ex) -- Eval ex, as there are no more input args
+msStep (MS s env (Eval r@(Recfun b@(Bind identt _ _ _)  ))) = MS s env (Ret $ Closure (env `E.add` (identt, Application r)) b)
+msStep (MS _ _   (Eval other                                  )) = error $ "NotImplemented::Not implemented expression: " ++ show other
 
+lookupVar :: VEnv -> String -> Value
+lookupVar env name = case env `E.lookup` name of
+  Just val -> val
+  Nothing -> error $ "UnknownVariable::Free variable in expression: " ++ show name
+
+runCons :: Value -> Value -> Value
+runCons e1 e2 = case (e1, e2) of
+  (I i, Nil)          -> Cons i Nil
+  (I i, c@(Cons _ _)) -> Cons i c
+  (_, _)              -> error "IllegalType::Can only run Cons against Integer values or other list constructors (Cons, Nil)"
+
+applyFunc :: Value -> Value -> Value
+applyFunc (Func f) e2 = f e2
+applyFunc v        _  = error $ "Error when applying Func " ++ show v
 
 isUnaryOp :: Op -> Bool
 isUnaryOp Neg  = True
@@ -138,34 +139,24 @@ isUnaryOp Tail = True
 isUnaryOp Null = True
 isUnaryOp _    = False
 
-applyFunc :: Value -> Value -> Value
-applyFunc (Func f) e2 = f e2
-applyFunc v _         = error $ "Error when applying Func " ++ show v
-
-runCons :: Value -> Value -> Value
-runCons e1 e2 = case (e1, e2) of
-  (I i, Nil         ) -> Cons i Nil
-  (I i, c@(Cons _ _)) -> Cons i c
-  (_,   _           ) -> error "Can only run Cons against Integer values and more Cons"
-
 applyUnaryOp :: Op -> Value -> Value
 applyUnaryOp op v = case op of
   Neg  -> case v of
             I i -> I (-1 * i)
-            _ -> error "Cannot invert non integer values"
+            _ -> error "IllegalType::Cannot invert non-integer values"
   Head -> case v of
             Cons i _  -> I i
-            Nil       -> error "Cannot run Head on empty list"
-            _         -> error "Can only run Head on array values"
+            Nil       -> error "IllegalIndex::Cannot run Head on empty list"
+            _         -> error "IllegalType::Can only run Head on arrays"
   Tail -> case v of
             Cons _ cs -> cs
-            Nil       -> error "Cannot run Tail on empty list"
-            _         -> error "Can only run Tail on array values"
+            Nil       -> error "IllegalIndex::Cannot run Tail on empty list"
+            _         -> error "IllegalType::Can only run Tail on arrays"
   Null -> case v of
             Nil       -> B True
             Cons _ _  -> B False
-            _         -> error "Can only run Null on array values"
-  _ -> error "Cannot run binary operator as unary operator"
+            _         -> error "IllegalType::Can only run Null on arrays"
+  _ -> error "IllegalOperation::Cannot run binary operator as unary operator"
 
 applyOp :: Op -> Value -> Value -> Value
 applyOp operator v v' = case operator of
@@ -180,168 +171,37 @@ applyOp operator v v' = case operator of
   Le    -> applyIntComp  (<=) v v'
   Eq    -> applyEquality      v v'
   Ne    -> applyInequality    v v'
-  _     -> error "Cannot run unary operator as binary operator"
+  _     -> error "IllegalOperation::Cannot run unary operator as binary operator"
   where
     applyDiv :: Value -> Value -> Value
-    applyDiv _      (I 0)  = error "Cannot divide by zero"
+    applyDiv _      (I 0)  = error "DivideByZero::Cannot divide by zero"
     applyDiv (I i1) (I i2) = I (i1 `div` i2)
     applyDiv (Func f) v2   = Func $ \x -> applyDiv (f x) v2
     applyDiv v1 (Func f2)  = Func $ \x -> applyDiv v1 (f2 x)
-    applyDiv _ _           = error $ "Cannot apply operator: " ++ show Sub
+    applyDiv _ _           = error $ "IllegalOperation::Cannot apply operator: " ++ show Sub
 
     applyInt :: (Integer -> Integer -> Integer) -> Value -> Value -> Value
     applyInt op (I i1) (I i2) = I (op  i1 i2)
     applyInt op (Func f) v2   = Func $ \x -> applyInt op (f x) v2
     applyInt op v1 (Func f2)  = Func $ \x -> applyInt op v1 (f2 x)
-    applyInt op _ _           = error $ "Cannot apply operator: " ++ show op
+    applyInt op _ _           = error $ "IllegalOperation::Cannot apply operator: " ++ show op
 
     applyIntComp :: (Integer -> Integer -> Bool) -> Value -> Value -> Value
     applyIntComp op (I i1) (I i2) = B (op i1 i2)
     applyIntComp op (Func f) v2   = Func $ \x -> applyIntComp op (f x) v2
     applyIntComp op v1 (Func f2)  = Func $ \x -> applyIntComp op v1 (f2 x)
-    applyIntComp op _ _            = error $ "Cannot apply operator: " ++ show op
+    applyIntComp op _ _           = error $ "IllegalOperation::Cannot apply operator: " ++ show op
 
     applyEquality :: Value -> Value -> Value
     applyEquality (I i1) (I i2) = B (i1 == i2)
     applyEquality (B b1) (B b2) = B (b1 == b2)
     applyEquality (Func f) v2   = Func $ \x -> applyEquality (f x) v2
     applyEquality v1 (Func f2)  = Func $ \x -> applyEquality v1 (f2 x)
-    applyEquality _ _            = error "Cannot run equality operator on values because they are different types or: (Lists equality not implemented yet)"
+    applyEquality _ _           = error "IllegalOperation::Cannot run equality operator on values of different types (Lists equality not implemented yet)"
 
     applyInequality :: Value -> Value -> Value
     applyInequality (I i1) (I i2) = B (i1 /= i2)
     applyInequality (B b1) (B b2) = B (b1 /= b2)
     applyInequality (Func f) v2   = Func $ \x -> applyEquality (f x) v2
     applyInequality v1 (Func f2)  = Func $ \x -> applyEquality v1 (f2 x)
-    applyInequality _ _            = error "Cannot run equality operator on values because they are different types or: (Lists equality not implemented yet)"
-
-
-
-{- 
-  Small Step Semantics, Manual steps
--}
-
-{- Small Step Semantics: Let in Multiple -}
--- . / o                                                                      => (Let [ Bind "x" (Type Int) (Num 1) : b : bs] (Var x))
--- (Let [b : bs] (Var x)) | . / o                                             => Bind "x" (Type Int) (Num 1)
--- (Let [b : bs] (Var x)) | . / o                                             => Bind "x" (Type Int) (Num 1)
--- SetEnv "x" <> | (Let [b : bs] (Var x)) | . / o                             => (Num 1)
--- SetEnv "x" <> | (Let [b : bs] (Var x)) | . / o                             <= Ret 1
--- (Let [bs] (Var x)) | . / o                                                 => b
--- . / x<-1;o                                                                 => (Let [bs] x) 
--- ...
--- SetEnv "ident" <> | (Let [] x) | . / x<-1;...;o                            <= Ret (Num 123)
--- . / x<-1;...;o                                                             => Var x
--- . / x<-1;...;o                                                             <= Ret 1
--- Done
-
--- (Let <> (Num 1) ] x) | . / o                                               => [ Bind "x" (Type Int) (Num 1)]]
--- (Let <> (Num 1) ] x) | . / o                                               => Bind "x" (Type Int) (Num 1) 
--- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               => (Num 1)
--- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               <= Ret 1
---  . / x<-1;o                                                                <= Var x 
---  . / x<-1;o                                                                <= 1
---  . / o                                                                     <= 1
-
-
-{- Small Step Semantics: Let in -}
--- . / o                                                                      => (Let [ Bind "x" (Type Int) (Num 1)]] x)
--- (Let <> (Num 1) ] x) | . / o                                               => [ Bind "x" (Type Int) (Num 1)]]
--- (Let <> (Num 1) ] x) | . / o                                               => Bind "x" (Type Int) (Num 1) 
--- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               => (Num 1)
--- SetEnv "x" <> | (Let <> (Num 1) ] x) | . / o                               <= Ret 1
---  . / x<-1;o                                                                <= Var x 
---  . / x<-1;o                                                                <= 1
---  . / o                                                                     <= 1
-
-
-{- Small Step Semantics: Sub -}
--- .                                                                        => (App (App (Prim Sub) (Num 3)) (Num 2))
--- (App <> (Num 2)) | .                                                     => (App (Prim Sub) (Num 3))
--- (App <> (Num 3)) | (App <> (Num 2)) | .                                  => (Prim Sub)
--- (App <> (Num 3)) | (App <> (Num 2)) | .                                  <= Ret (Func(\x -> Func \y -> x - y))
--- (App Ret (Func(\x -> Func \y -> x - y)) <>) | (App <> (Num 2)) | .       => (Num 3)
--- (App Ret (Func(\x -> Func \y -> x - y)) <>) | (App <> (Num 2)) | .       <= Ret 3
--- (App <> (Num 2)) | .                                                     <= Ret (Func \y -> 3 - y)
--- (App Ret (Func \y -> 3 - y) <>) | .                                      => (Num 2)
--- (App Ret (Func \y -> 3 - y) <>) | .                                      <= Ret 2
--- .                                                                        <= Ret 1        
-
-{- Small Step Semantics: Cons and Nil -}
--- .                                                                        => (App (App (Con "Cons") (Num 1)) (Con "Nil"))
--- (App <> (Con "Nil")) | .                                                 => (App (Con "Cons") (Num 1))
---
--- (App <> (Num 1)) | (App <> (Con "Nil")) | .                              => (Con "Cons")
---
--- (App <> (Num 1)) | (App <> (Con "Nil")) | .                              <= Ret Func(\x -> Func \y -> Cons x y)
--- (App Ret Func(\x -> Func \y -> Cons x y) <>) | (App <> (Con "Nil")) | .  => (Num 1)
--- (App Ret Func(\x -> Func \y -> Cons x y) <>) | (App <> (Con "Nil")) | .  <= Ret 1
--- (App <> (Con "Nil")) | .                                                 <= Ret (Func \y -> Cons 1 y)
--- (App Ret (Func \y -> Cons 1 y) <>) | .                                   => (Con "Nil")
--- (App Ret (Func \y -> Cons 1 y) <>) | .                                   <= Ret Nil
--- .                                                                        <= Cons 1 Nil
-
-{- Small Step Semantics: Apply Binary Operator -}
--- .                                      => (App (App (Prim op) e1) e2)
--- App <> e2 | .                          => (App (Prim op) e1)
--- (App <> e1) | (App <> e2) | .          => (Prim op)
--- (App <> e1) | (App <> e2) | .          <= Ret (\x -> \x' -> op x x')     --Ret Func for short
--- (App (Ret Func) <>) | (App <> e2) | .  => e1
--- (App (Ret Func) <>) | (App <> e2) | .  <= e1
--- (App <> e2) | .                        => (\x' -> op e1 x')
--- (App <> e2) | .                        <= Ret (\x' -> op e1 x')
--- .                                      <= Ret (op e1 e2)
-
-
-
--- debug message:MS 
--- [] 
---   (Env (fromList [])) 
---   (Eval (Let [Bind "ones" (TypeApp (TypeCon List) (TypeCon Int)) [] (Recfun (Bind "ones" (TypeApp (TypeCon List) (TypeCon Int)) [] (App (App (Con "Cons") (Num 1)) (Var "ones"))))] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil")))))
-
--- debug message:MS 
---   [AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList [])) 
---   (Eval (Recfun (Bind "ones" (TypeApp (TypeCon List) (TypeCon Int)) [] (App (App (Con "Cons") (Num 1)) (Var "ones")))))
-
--- debug message:MS 
---   [AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList [])) 
---   (Eval (App (App (Con "Cons") (Num 1)) (Var "ones")))
-
--- debug message:MS 
---   [Application (Var "ones"),AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList [])) 
---   (Eval (App (Con "Cons") (Num 1)))
-
--- debug message:MS
---   [Application (Num 1),Application (Var "ones"),AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList []))
---    (Eval (Con "Cons"))
-
--- debug message:MS 
---   [Application (Num 1),Application (Var "ones"),AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList [])) 
---   (Ret (Func <function>))
-
--- debug message:MS 
---   [Func <function>,Application (Var "ones"),AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList [])) 
---   (Eval (Num 1))
-
--- debug message:MS 
---   [Func <function>,Application (Var "ones"),AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList [])) 
---   (Ret (I 1))
-
--- debug message:MS 
---   [Application (Var "ones"),AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))]
---   (Env (fromList [])) 
---   (Ret (Func <function>))
-
--- debug message:MS 
---   [Func <function>,AddEnv "ones",AddEnv "ones",Application (Let [] (App (App (Con "Cons") (App (Prim Head) (Var "ones"))) (App (App (Con "Cons") (App (Prim Head) (App (Prim Tail) (Var "ones")))) (Con "Nil"))))] 
---   (Env (fromList []))
---    (Eval (Var "ones"))
-
--- minhs-1.exe: Invalid expression: free variable in expression: "ones"
+    applyInequality _ _           = error "IllegalOperation::Cannot run equality operator on values of different types (Lists equality not implemented yet)"
