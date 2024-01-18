@@ -1,8 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 module MinHS.Evaluator where
 
-import Data.Bool (Bool (False, True))
-import Debug.Trace
 import qualified MinHS.Env as E
 import MinHS.Pretty
 import MinHS.Syntax
@@ -89,9 +87,7 @@ msStep (MS stack env (Ret val)) = msStep' stack where
   msStep' (Closure env' (Bind _id _t (a : as) ex) : s) = let newEnv = env' `E.add` (a, val)
                                                           in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind _id _t as ex))
   msStep' (Func f                                 : s) = MS s env (Ret $ f val)
-  msStep' (Application e2                         : s) = case val of
-                                                          c@Closure {} -> MS (c : s) env (Eval e2)
-                                                          func -> MS (Func (applyFunc func) : s) env (Eval e2)
+  msStep' (Application e2                         : s) = MS (val : s) env (Eval e2)
   msStep' (sf                                     : _) = error $ "NotImplemented::Not implemented return state: { stack: " ++ show sf ++ " , return value: " ++ show val ++ " }"
 -- ======Eval Mode Patterns===== --
 msStep (MS s env (Eval evalValue)) = msStep' evalValue where
@@ -102,7 +98,7 @@ msStep (MS s env (Eval evalValue)) = msStep' evalValue where
   msStep' (Con "False"                          ) = MS s env (Ret $ B False)
   msStep' (Con "Nil"                            ) = MS s env (Ret Nil)
   msStep' (Con "Cons"                           ) = MS s env (Ret (Func (Func . runCons)))
-  msStep' (Prim op                              ) = MS s env (Ret (Func $ if isUnaryOp op then applyUnaryOp op else Func . applyOp op))
+  msStep' (Prim op                              ) = MS s env (Ret (Func $ applyOp op))
   msStep' (App e1 e2                            ) = MS (Application e2 : s) env (Eval e1)
   msStep' (If g e1 e2                           ) = MS (iteFunc e1 e2 : s) env (Eval g)
   msStep' (Let [] ex                            ) = MS s env (Eval ex)
@@ -123,24 +119,24 @@ lookupVar env name = case env `E.lookup` name of
   Nothing -> error $ "UnknownVariable::Free variable in expression: " ++ show name
 
 runCons :: Value -> Value -> Value
-runCons e1 e2 = case (e1, e2) of
-  (I i, Nil)          -> Cons i Nil
-  (I i, c@(Cons _ _)) -> Cons i c
-  (_, _)              -> error "IllegalType::Can only run Cons against Integer values or other list constructors (Cons, Nil)"
+runCons (I i) Nil       = Cons i Nil
+runCons (I i) c@Cons {} = Cons i c
+runCons _     _         = error "IllegalType::Can only run Cons against Integer values or other list constructors (Cons, Nil)"
 
-applyFunc :: Value -> Value -> Value
-applyFunc (Func f) e2 = f e2
-applyFunc v        _  = error $ "Error when applying Func " ++ show v
 
-isUnaryOp :: Op -> Bool
-isUnaryOp Neg  = True
-isUnaryOp Head = True
-isUnaryOp Tail = True
-isUnaryOp Null = True
-isUnaryOp _    = False
-
-applyUnaryOp :: Op -> Value -> Value
-applyUnaryOp op v = case op of
+applyOp :: Op -> Value -> Value
+applyOp operator v = case operator of
+  Add   -> Func $ applyInt      (+)  v
+  Sub   -> Func $ applyInt      (-)  v
+  Mul   -> Func $ applyInt      (*)  v
+  Quot  -> Func $ applyDiv           v
+  Rem   -> Func $ applyInt      mod  v
+  Gt    -> Func $ applyIntComp  (>)  v
+  Ge    -> Func $ applyIntComp  (>=) v
+  Lt    -> Func $ applyIntComp  (<)  v
+  Le    -> Func $ applyIntComp  (<=) v
+  Eq    -> Func $ applyEquality      v
+  Ne    -> Func $ applyInequality    v
   Neg  -> case v of
             I i -> I (-1 * i)
             _ -> error "IllegalType::Cannot invert non-integer values"
@@ -156,22 +152,6 @@ applyUnaryOp op v = case op of
             Nil       -> B True
             Cons _ _  -> B False
             _         -> error "IllegalType::Can only run Null on arrays"
-  _ -> error "IllegalOperation::Cannot run binary operator as unary operator"
-
-applyOp :: Op -> Value -> Value -> Value
-applyOp operator v v' = case operator of
-  Add   -> applyInt      (+)  v v'
-  Sub   -> applyInt      (-)  v v'
-  Mul   -> applyInt      (*)  v v'
-  Quot  -> applyDiv           v v'
-  Rem   -> applyInt      mod  v v'
-  Gt    -> applyIntComp  (>)  v v'
-  Ge    -> applyIntComp  (>=) v v'
-  Lt    -> applyIntComp  (<)  v v'
-  Le    -> applyIntComp  (<=) v v'
-  Eq    -> applyEquality      v v'
-  Ne    -> applyInequality    v v'
-  _     -> error "IllegalOperation::Cannot run unary operator as binary operator"
   where
     applyDiv :: Value -> Value -> Value
     applyDiv _      (I 0)  = error "DivideByZero::Cannot divide by zero"
