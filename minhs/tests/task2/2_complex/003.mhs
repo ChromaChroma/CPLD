@@ -1,0 +1,4 @@
+main :: Int
+  = let fn :: (Int -> Int)
+      = (/) (8/2);
+    in fn 2; 

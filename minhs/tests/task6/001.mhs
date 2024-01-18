@@ -1,0 +1,4 @@
+-- main :: [Int]
+--   = let xs :: [Int] = recfun ys :: [Int] 
+--           = if ys < 2 then ys + 1 else 0;
+--      in xs;

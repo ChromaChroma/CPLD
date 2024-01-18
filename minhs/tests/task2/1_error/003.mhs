@@ -1,0 +1,4 @@
+main :: [Int]
+  = let fn :: ([Int] -> [Int])
+      = tail;
+    in fn Nil; 

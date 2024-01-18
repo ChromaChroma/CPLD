@@ -1,0 +1,4 @@
+main :: Int
+  = let eq :: (Int -> Int -> Int -> Int -> Int)
+      = recfun eq :: (Int -> Int -> Int -> Int  -> Int) x y z a = x+y+z+a;
+    in eq 3 3 4 4;

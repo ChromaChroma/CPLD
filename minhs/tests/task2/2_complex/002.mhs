@@ -1,0 +1,4 @@
+main :: Int
+  = let dec :: (Int -> Int)
+      = (*) (2*1);
+    in dec 2; -- returns 4

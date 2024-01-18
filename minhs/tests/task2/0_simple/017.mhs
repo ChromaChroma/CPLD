@@ -1,0 +1,4 @@
+main :: Bool
+  = let fn :: ([Int] -> Bool)
+      = null;
+    in fn Nil; 

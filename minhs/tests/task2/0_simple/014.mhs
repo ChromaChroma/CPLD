@@ -1,0 +1,4 @@
+main :: Int
+  = let fn :: ([Int] -> Int)
+      = head;
+    in fn (Cons 1 (Cons 2 Nil)); 

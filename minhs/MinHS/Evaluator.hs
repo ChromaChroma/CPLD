@@ -81,41 +81,45 @@ msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms then e else error "Abstrac
 
 msStep :: MachineState -> MachineState
 -- ======Ret Mode Patterns===== --
-msStep (MS s                                                  env (Ret (Application ex))) = MS s env (Eval ex)
-msStep (MS []                                                 _   (Ret _               )) = error "IllegalOperation::Cannot step when final state has been reached"
-msStep (MS (EnvValue env'                                : s) _   (Ret val             )) = MS s env' (Ret val) -- Recover previous env
-msStep (MS (AddEnv ident : AddEnv identt                 : s) env (Ret val             )) = MS (AddEnv identt : s) (env `E.add` (ident, val)) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
-msStep (MS (AddEnv ident : Application e2                : s) env (Ret val             )) = MS s (env `E.add` (ident, val)) (Eval e2)
-msStep (MS (Closure _    (Bind _     _  []           _ ) : _) _   (Ret _               )) = error "IllegalOperation::Cannot apply closure without arguments on a return value"
-msStep (MS (Closure env' (Bind _     _t [arg]        ex) : s) env (Ret val             )) = MS (EnvValue env : s) (env' `E.add` (arg, val)) (Eval ex)
-msStep (MS (Closure env' (Bind ident _t (arg : args) ex) : s) env (Ret val             )) = let newEnv = env' `E.add` (arg, val)
-                                                                                            in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind ident _t args ex))--TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
-msStep (MS (Func f                                       : s) env (Ret val             )) = MS s env (Ret $ f val)
-msStep (MS (Application e2                               : s) env (Ret val             )) = case val of
-                                                                                              c@Closure {} -> MS (c : s) env (Eval e2)
-                                                                                              func -> MS (Func (applyFunc func) : s) env (Eval e2) --Assumed func will be a Func
-msStep (MS (sf                                           : _) _   (Ret val             )) = error $ "NotImplemented::Not implemented return state: { stack: " ++ show sf ++ " , return value: " ++ show val ++ " }"
-
+msStep (MS s                   env (Ret (Application ex))) = MS s env (Eval ex)
+msStep (MS stack env (Ret val)) = msStep' stack where 
+  msStep'  :: [Value] -> MachineState
+  msStep' []                                           = error "IllegalOperation::Cannot step when final state has been reached"
+  msStep' (EnvValue env'                          : s) = MS s env' (Ret val) -- Recover previous env
+  msStep' (AddEnv _id : AddEnv _id'               : s) = MS (AddEnv _id : s) (env `E.add` (_id, val)) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
+  msStep' (AddEnv _id : Application e2            : s) = MS s (env `E.add` (_id, val)) (Eval e2)
+  msStep' (Closure _    (Bind _   _  []       _ ) : _) = error "IllegalOperation::Cannot apply closure without arguments on a return value"
+  msStep' (Closure env' (Bind _   _t [a]      ex) : s) = MS (EnvValue env : s) (env' `E.add` (a, val)) (Eval ex)
+  msStep' (Closure env' (Bind _id _t (a : as) ex) : s) = let newEnv = env' `E.add` (a, val)
+                                                          in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind _id _t as ex)) --TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
+  msStep' (Func f                                 : s) = MS s env (Ret $ f val)
+  msStep' (Application e2                         : s) = case val of
+                                                          c@Closure {} -> MS (c : s) env (Eval e2)
+                                                          func -> MS (Func (applyFunc func) : s) env (Eval e2)
+  msStep' (sf                                     : _) = error $ "NotImplemented::Not implemented return state: { stack: " ++ show sf ++ " , return value: " ++ show val ++ " }"
 -- ======Eval Mode Patterns===== --
-msStep (MS s env (Eval (Var ident                             ))) = MS s env (Ret $ lookupVar env ident)
-msStep (MS s env (Eval (Num i                                 ))) = MS s env (Ret $ I i)
-msStep (MS s env (Eval (Con "True"                            ))) = MS s env (Ret $ B True)
-msStep (MS s env (Eval (Con "False"                           ))) = MS s env (Ret $ B False)
-msStep (MS s env (Eval (Con "Nil"                             ))) = MS s env (Ret Nil)
-msStep (MS s env (Eval (Con "Cons"                            ))) = MS s env (Ret (Func (Func . runCons)))
-msStep (MS s env (Eval (Prim op                               ))) = MS s env (Ret (Func $ if isUnaryOp op then applyUnaryOp op else Func . applyOp op))
-msStep (MS s env (Eval (App e1 e2                             ))) = MS (Application e2 : s) env (Eval e1)
-msStep (MS s env (Eval (If g e1 e2                            ))) = MS (iteFunc : s) env (Eval g)
-                                                                    where iteFunc = Func $ \case
-                                                                            B True -> Application e1
-                                                                            B False -> Application e2
-                                                                            _ -> error "IllegalType::Expected Bool return value (For resolving the guard of IfThenElse)"
-msStep (MS s env (Eval (Let [] ex                            ))) = MS s env (Eval ex)
-msStep (MS s env (Eval (Let (Bind ident   _  [] ex : bs) body))) = MS (AddEnv ident : Application (Let bs body) : s) env (Eval ex)
-msStep (MS s env (Eval (Let (b@(Bind ident _ _ _ ) : bs) body))) = MS (AddEnv ident : Application (Let bs body) : s) env (Ret $ Closure env b)
-msStep (MS s env (Eval r@(Recfun (Bind identt _t [] ex)      ))) = MS s (env `E.add` (identt, Application r)) (Eval ex) -- Eval ex, as there are no more input args
-msStep (MS s env (Eval r@(Recfun b@(Bind identt _ _ _)  ))) = MS s env (Ret $ Closure (env `E.add` (identt, Application r)) b)
-msStep (MS _ _   (Eval other                                  )) = error $ "NotImplemented::Not implemented expression: " ++ show other
+msStep (MS s env (Eval evalValue)) = msStep' evalValue where
+  msStep' :: Exp -> MachineState
+  msStep' (Var _id                              ) = MS s env (Ret $ lookupVar env _id)
+  msStep' (Num i                                ) = MS s env (Ret $ I i)
+  msStep' (Con "True"                           ) = MS s env (Ret $ B True)
+  msStep' (Con "False"                          ) = MS s env (Ret $ B False)
+  msStep' (Con "Nil"                            ) = MS s env (Ret Nil)
+  msStep' (Con "Cons"                           ) = MS s env (Ret (Func (Func . runCons)))
+  msStep' (Prim op                              ) = MS s env (Ret (Func $ if isUnaryOp op then applyUnaryOp op else Func . applyOp op))
+  msStep' (App e1 e2                            ) = MS (Application e2 : s) env (Eval e1)
+  msStep' (If g e1 e2                           ) = MS (iteFunc e1 e2 : s) env (Eval g)
+  msStep' (Let [] ex                            ) = MS s env (Eval ex)
+  msStep' (Let (Bind    _id _ [] ex : bs) body  ) = MS (AddEnv _id : Application (Let bs body) : s) env (Eval ex) -- TODO: comment this and implement way to lazy load closures task6
+  msStep' (Let (b@(Bind _id _ _  _) : bs) body  ) = MS (AddEnv _id : Application (Let bs body) : s) env (Ret $ Closure env b)
+  msStep' r@(Recfun b@(Bind _id _  _  _ )       ) = MS s env (Ret $ Closure (env `E.add` (_id, Application r)) b)
+  msStep' e                                       = error $ "NotImplemented::Not implemented expression: " ++ show e
+
+  iteFunc :: Exp -> Exp -> Value
+  iteFunc e1 e2 = Func $ \case
+    B True -> Application e1
+    B False -> Application e2
+    _ -> error "IllegalType::Expected Bool return value (For resolving the guard of IfThenElse)"
 
 lookupVar :: VEnv -> String -> Value
 lookupVar env name = case env `E.lookup` name of
