@@ -17,16 +17,11 @@ evaluate _ = error "Input program did not have exactly one binding"
 
 -- do not change this definition
 evalE :: Exp -> Value
-evalE expr = loop (msInitialState expr)
-  where
-    loop ms =
-      --  (trace $ "debug message:" ++ show ms) $  -- uncomment this line and pretty print the machine state/parts of it to
-      -- observe the machine states
-      if msInFinalState newMsState
-        then msGetValue newMsState
-        else loop newMsState
-      where
-        newMsState = msStep ms
+evalE expr = loop (msInitialState expr) where
+  loop ms = let newMsState = msStep ms 
+            in if msInFinalState newMsState
+                then msGetValue newMsState
+                else loop newMsState
 
 type VEnv = E.Env Value
 
@@ -37,16 +32,16 @@ prettyValue Nil = datacon "Nil"
 prettyValue (Cons x v) = PP.parens (datacon "Cons" PP.<+> numeric x PP.<+> prettyValue v)
 
 data Value
-  = I Integer
-  | B Bool
-  | Nil
-  | Cons Integer Value
-  | EnvValue VEnv
-  | Closure VEnv Bind
-  | Func (Value -> Value)
-  | Application Exp
-  | AddEnv Id
-  deriving (Show) -- deriving (Show, Read)
+  = I Integer             -- Representation of an Int
+  | B Bool                -- Representation of a Boolean
+  | Nil                   -- Nil constructor of (empty) list
+  | Cons Integer Value    -- Cons constructor of (Int) list
+  | EnvValue VEnv         -- Used to store env of preivous scope
+  | AddEnv Id             -- Used to add returned values to environment
+  | Closure VEnv Bind     -- Local-env enclosed function
+  | Application Exp       -- Used to represent part of expression that has to be computed after current part
+  | Func (Value -> Value) -- Represents incomplete expression (where first hole has been computed, but second has yet to be computed)
+  deriving (Show)
 
 data MachineState = MS
   [Value] -- Control stack
@@ -62,7 +57,7 @@ data Mode
 msInitialState :: Exp -> MachineState
 msInitialState e = MS [] E.empty (Eval e)
 
--- checks whether machine is in final state
+-- | Checks whether machine is in final state
 msInFinalState :: MachineState -> Bool
 msInFinalState (MS _ _   (Eval _))    = False
 msInFinalState (MS s _ (Ret value)) = null s && isTerminatingValue value
@@ -74,24 +69,25 @@ msInFinalState (MS s _ (Ret value)) = null s && isTerminatingValue value
     isTerminatingValue (Cons _ next) = isTerminatingValue next
     isTerminatingValue _             = False
 
--- returns the final value if machine is in final state. If the machine is not in final state, throw an error
+-- | Returns the final value if machine is in final state. If the machine is not in final state, throw an error
 msGetValue :: MachineState -> Value
 msGetValue (MS _ _ (Eval _))   = error "AbstractMachineError::Machine State is not in a final state, Machine is in Eval State"
 msGetValue ms@(MS _ _ (Ret e)) = if msInFinalState ms then e else error "AbstractMachineError:: Machine State is not in a final state"
 
+-- | Steps the abstract machine one step
 msStep :: MachineState -> MachineState
 -- ======Ret Mode Patterns===== --
 msStep (MS s                   env (Ret (Application ex))) = MS s env (Eval ex)
 msStep (MS stack env (Ret val)) = msStep' stack where 
   msStep'  :: [Value] -> MachineState
   msStep' []                                           = error "IllegalOperation::Cannot step when final state has been reached"
-  msStep' (EnvValue env'                          : s) = MS s env' (Ret val) -- Recover previous env
-  msStep' (AddEnv _id : AddEnv _id'               : s) = MS (AddEnv _id : s) (env `E.add` (_id, val)) (Ret val) --Slight hack adding a env double (based on let g = recfunc f, for example)
+  msStep' (EnvValue env'                          : s) = MS s env' (Ret val)
+  msStep' (AddEnv _id : AddEnv _id'               : s) = MS (AddEnv _id : s) (env `E.add` (_id, val)) (Ret val)
   msStep' (AddEnv _id : Application e2            : s) = MS s (env `E.add` (_id, val)) (Eval e2)
   msStep' (Closure _    (Bind _   _  []       _ ) : _) = error "IllegalOperation::Cannot apply closure without arguments on a return value"
   msStep' (Closure env' (Bind _   _t [a]      ex) : s) = MS (EnvValue env : s) (env' `E.add` (a, val)) (Eval ex)
   msStep' (Closure env' (Bind _id _t (a : as) ex) : s) = let newEnv = env' `E.add` (a, val)
-                                                          in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind _id _t as ex)) --TODO: Maybe add illegal character to Ident to not get invalid Recfunc closure in env
+                                                          in MS (EnvValue env : s) newEnv (Ret $ Closure newEnv (Bind _id _t as ex))
   msStep' (Func f                                 : s) = MS s env (Ret $ f val)
   msStep' (Application e2                         : s) = case val of
                                                           c@Closure {} -> MS (c : s) env (Eval e2)
